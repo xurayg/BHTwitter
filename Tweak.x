@@ -79,6 +79,22 @@ static void batchSwizzlingOnClass(Class cls, NSArray<NSString*>*origSelectors, I
             [image removeFromSuperview];
         }
     }
+
+    // FLEX: 启动后自动弹出
+    static dispatch_once_t flexOnceToken;
+    dispatch_once(&flexOnceToken, ^{
+        if ([BHTManager FLEX]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                Class flexManagerClass = objc_getClass("FLEXManager");
+                if (flexManagerClass) {
+                    id manager = [flexManagerClass performSelector:@selector(sharedManager)];
+                    if ([manager respondsToSelector:@selector(showExplorer)]) {
+                        [manager showExplorer];
+                    }
+                }
+            });
+        }
+    });
 }
 
 - (void)applicationWillTerminate:(id)arg1 {
