@@ -34,6 +34,7 @@
 + (BOOL)DisableVODCaptions;
 + (BOOL)Padlock;
 + (BOOL)changeFont;
++ (BOOL)FLEX;
 + (BOOL)autoHighestLoad;
 + (BOOL)disableSensitiveTweetWarnings;
 + (BOOL)showScrollIndicator;

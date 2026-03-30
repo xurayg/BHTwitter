@@ -26,6 +26,67 @@ typedef NS_ENUM(NSInteger, TwitterFontStyle) {
     TwitterFontStyleBold
 };
 
+static UIWindow *BHTSettingsActiveWindow(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            if (windowScene.activationState != UISceneActivationStateForegroundActive) {
+                continue;
+            }
+
+            for (UIWindow *window in windowScene.windows) {
+                if (window.isKeyWindow) {
+                    return window;
+                }
+            }
+
+            if (windowScene.windows.count) {
+                return windowScene.windows.firstObject;
+            }
+        }
+    }
+
+    return UIApplication.sharedApplication.keyWindow;
+}
+
+static void BHTSetFLEXExplorerVisible(BOOL visible) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Class flexManagerClass = NSClassFromString(@"FLEXManager");
+        if (!flexManagerClass) {
+            NSLog(@"[BHTwitter] FLEXManager is unavailable.");
+            return;
+        }
+
+        id manager = [flexManagerClass performSelector:@selector(sharedManager)];
+        if (!visible) {
+            if ([manager respondsToSelector:@selector(hideExplorer)]) {
+                [manager performSelector:@selector(hideExplorer)];
+            }
+            return;
+        }
+
+        UIWindow *window = BHTSettingsActiveWindow();
+        UIWindowScene *windowScene = nil;
+        if (@available(iOS 13.0, *)) {
+            windowScene = window.windowScene;
+        }
+
+        if (@available(iOS 13.0, *)) {
+            if (windowScene && [manager respondsToSelector:@selector(showExplorerFromScene:)]) {
+                [manager performSelector:@selector(showExplorerFromScene:) withObject:windowScene];
+            } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+                [manager performSelector:@selector(showExplorer)];
+            }
+        } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+            [manager performSelector:@selector(showExplorer)];
+        }
+    });
+}
+
 static UIFont *TwitterChirpFont(TwitterFontStyle style) {
     switch (style) {
         case TwitterFontStyleBold:
@@ -165,6 +226,7 @@ static UIFont *TwitterChirpFont(TwitterFontStyle style) {
         PSSpecifier *mainSection = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"MAIN_SECTION_HEADER_TITLE"] footer:nil];
         PSSpecifier *twitterBlueSection = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"TWITTER_BLUE_SECTION_HEADER_TITLE"] footer:[[BHTBundle sharedBundle] localizedStringForKey:@"TWITTER_BLUE_SECTION_FOOTER_TITLE"]];
         PSSpecifier *layoutSection = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"LAYOUT_CUS_SECTION_HEADER_TITLE"] footer:[[BHTBundle sharedBundle] localizedStringForKey:@"LAYOUT_CUS_SECTION_FOOTER_TITLE"]];
+        PSSpecifier *debugSection = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"DEBUG_SECTION_HEADER_TITLE"] footer:nil];
         PSSpecifier *legalSection = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"LEGAL_SECTION_HEADER_TITLE"] footer:nil];
         PSSpecifier *developer = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"DEVELOPER_SECTION_HEADER_TITLE"] footer:nil];
         PSSpecifier *other = [self newSectionWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"PEOPLE_WHO_CONTRIBUTED_SECTION_HEADER_TITLE"] footer:[NSString stringWithFormat:@"BHTwitter v%@", [[BHTBundle sharedBundle] BHTwitterVersion]]];
@@ -244,8 +306,12 @@ static UIFont *TwitterChirpFont(TwitterFontStyle style) {
         PSSpecifier *forceFullFrame = [self newSwitchCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"FORCE_TWEET_FULL_FRAME_TITLE"] detailTitle:nil key:@"force_tweet_full_frame" defaultValue:false changeAction:nil];
         
         PSSpecifier *showScrollIndicator = [self newSwitchCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"SHOW_SCOLL_INDICATOR_OPTION_TITLE"] detailTitle:nil key:@"showScollIndicator" defaultValue:false changeAction:nil];
+
+        PSSpecifier *alwaysFollowingPage = [self newSwitchCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"ALWAYS_FOLLOWING_PAGE_OPTION_TITLE"] detailTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"ALWAYS_FOLLOWING_PAGE_OPTION_DETAIL_TITLE"] key:@"always_following_page" defaultValue:false changeAction:nil];
         
         PSSpecifier *font = [self newSwitchCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"FONT_OPTION_TITLE"] detailTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"FONT_OPTION_DETAIL_TITLE"] key:@"en_font" defaultValue:false changeAction:nil];
+
+        PSSpecifier *flex = [self newSwitchCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"FLEX_OPTION_TITLE"] detailTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"FLEX_OPTION_DETAIL_TITLE"] key:@"flex_twitter" defaultValue:false changeAction:@selector(toggleFLEXSwitch:)];
         
         PSSpecifier *regularFontsPicker = [self newButtonCellWithTitle:[[BHTBundle sharedBundle] localizedStringForKey:@"REQULAR_FONTS_PICKER_OPTION_TITLE"] detailTitle:[[NSUserDefaults standardUserDefaults] objectForKey:@"bhtwitter_font_1"] dynamicRule:@"en_font, ==, 0" action:@selector(showRegularFontPicker:)];
         
@@ -311,11 +377,15 @@ static UIFont *TwitterChirpFont(TwitterFontStyle style) {
             hideBookmarkButton,
             forceFullFrame,
             showScrollIndicator,
+            alwaysFollowingPage,
             font,
             regularFontsPicker,
             boldFontsPicker,
+
+            debugSection, // 3
+            flex,
             
-            legalSection, // 3
+            legalSection, // 4
             acknowledgements,
             
             developer, // 5
@@ -515,6 +585,12 @@ static UIFont *TwitterChirpFont(TwitterFontStyle style) {
     }
     [self.navigationController pushViewController:acknowledgementsVC animated:true];
 }
+
+- (void)toggleFLEXSwitch:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:@"flex_twitter"];
+    BHTSetFLEXExplorerVisible(sender.isOn);
+}
+
 - (void)showCustomTabBarVC:(PSSpecifier *)specifier {
     BHCustomTabBarViewController *customTabBarVC = [[BHCustomTabBarViewController alloc] init];
     if (self.twAccount != nil) {

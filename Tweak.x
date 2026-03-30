@@ -4,6 +4,134 @@
 #import "BHTBundle/BHTBundle.h"
 #import "MobileCoreServices/MobileCoreServices.h"
 #import "MobileCoreServices/UTCoreTypes.h"
+#import <objc/runtime.h>
+
+static BOOL BHTHasShownFLEXExplorer = NO;
+static NSUInteger BHTFLEXShowRetryCount = 0;
+static const NSUInteger BHTFLEXMaxShowRetries = 8;
+static const void *BHTFLEXGestureKey = &BHTFLEXGestureKey;
+
+static UIWindow *BHTActiveWindow(void) {
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) {
+                continue;
+            }
+
+            UIWindowScene *windowScene = (UIWindowScene *)scene;
+            if (windowScene.activationState != UISceneActivationStateForegroundActive) {
+                continue;
+            }
+
+            for (UIWindow *window in windowScene.windows) {
+                if (window.isKeyWindow) {
+                    return window;
+                }
+            }
+
+            if (windowScene.windows.count) {
+                return windowScene.windows.firstObject;
+            }
+        }
+    }
+
+    return UIApplication.sharedApplication.keyWindow;
+}
+
+static void BHTToggleFLEXExplorer(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![BHTManager FLEX]) {
+            return;
+        }
+
+        Class flexManagerClass = NSClassFromString(@"FLEXManager");
+        if (!flexManagerClass) {
+            NSLog(@"[BHTwitter] FLEXManager is unavailable.");
+            return;
+        }
+
+        id manager = [flexManagerClass performSelector:@selector(sharedManager)];
+        if ([manager respondsToSelector:@selector(toggleExplorer)]) {
+            [manager performSelector:@selector(toggleExplorer)];
+            return;
+        }
+
+        UIWindow *window = BHTActiveWindow();
+        UIWindowScene *windowScene = nil;
+        if (@available(iOS 13.0, *)) {
+            windowScene = window.windowScene;
+        }
+
+        if (@available(iOS 13.0, *)) {
+            if (windowScene && [manager respondsToSelector:@selector(showExplorerFromScene:)]) {
+                [manager performSelector:@selector(showExplorerFromScene:) withObject:windowScene];
+            } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+                [manager performSelector:@selector(showExplorer)];
+            }
+        } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+            [manager performSelector:@selector(showExplorer)];
+        }
+    });
+}
+
+static void BHTInstallFLEXGesture(UIWindow *window, id target) {
+    if (!window || ![BHTManager FLEX]) {
+        return;
+    }
+
+    if (objc_getAssociatedObject(window, BHTFLEXGestureKey) != nil) {
+        return;
+    }
+
+    UITapGestureRecognizer *gesture = [[UITapGestureRecognizer alloc] initWithTarget:target action:@selector(bht_handleFLEXGesture:)];
+    gesture.numberOfTouchesRequired = 3;
+    gesture.numberOfTapsRequired = 2;
+    gesture.cancelsTouchesInView = NO;
+    gesture.delaysTouchesBegan = NO;
+    gesture.delaysTouchesEnded = NO;
+    [window addGestureRecognizer:gesture];
+    objc_setAssociatedObject(window, BHTFLEXGestureKey, gesture, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void BHTTryShowFLEXExplorer(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (BHTHasShownFLEXExplorer || ![BHTManager FLEX]) {
+            return;
+        }
+
+        Class flexManagerClass = NSClassFromString(@"FLEXManager");
+        UIWindow *window = BHTActiveWindow();
+        UIWindowScene *windowScene = nil;
+        if (@available(iOS 13.0, *)) {
+            windowScene = window.windowScene;
+        }
+
+        if (!flexManagerClass || !window || !window.rootViewController) {
+            if (BHTFLEXShowRetryCount < BHTFLEXMaxShowRetries) {
+                BHTFLEXShowRetryCount++;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    BHTTryShowFLEXExplorer();
+                });
+            } else {
+                NSLog(@"[BHTwitter] FLEXManager is unavailable or app window is not ready.");
+            }
+            return;
+        }
+
+        id manager = [flexManagerClass performSelector:@selector(sharedManager)];
+        if (@available(iOS 13.0, *)) {
+            if (windowScene && [manager respondsToSelector:@selector(showExplorerFromScene:)]) {
+                [manager performSelector:@selector(showExplorerFromScene:) withObject:windowScene];
+            } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+                [manager performSelector:@selector(showExplorer)];
+            }
+        } else if ([manager respondsToSelector:@selector(showExplorer)]) {
+            [manager performSelector:@selector(showExplorer)];
+        }
+
+        BHTHasShownFLEXExplorer = YES;
+    });
+}
 
 static UIFont * _Nullable TAEStandardFontGroupReplacement(UIFont *self, SEL _cmd, CGFloat arg1, CGFloat arg2) {
     BH_BaseImp orig  = originalFontsIMP[NSStringFromSelector(_cmd)].pointerValue;
@@ -80,21 +208,15 @@ static void batchSwizzlingOnClass(Class cls, NSArray<NSString*>*origSelectors, I
         }
     }
 
-    // FLEX: 启动后自动弹出
-    static dispatch_once_t flexOnceToken;
-    dispatch_once(&flexOnceToken, ^{
-        if ([BHTManager FLEX]) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                Class flexManagerClass = objc_getClass("FLEXManager");
-                if (flexManagerClass) {
-                    id manager = [flexManagerClass performSelector:@selector(sharedManager)];
-                    if ([manager respondsToSelector:@selector(showExplorer)]) {
-                        [manager showExplorer];
-                    }
-                }
-            });
-        }
-    });
+    BHTInstallFLEXGesture(self.window ?: BHTActiveWindow(), self);
+    BHTTryShowFLEXExplorer();
+}
+
+%new
+- (void)bht_handleFLEXGesture:(UITapGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateRecognized) {
+        BHTToggleFLEXExplorer();
+    }
 }
 
 - (void)applicationWillTerminate:(id)arg1 {
@@ -902,6 +1024,58 @@ static void batchSwizzlingOnClass(Class cls, NSArray<NSString*>*origSelectors, I
 }
 %end
 
+@interface TFNScrollingSegmentedViewController : UIViewController
+- (id)parentViewController;
+@end
+
+%hook TFNScrollingSegmentedViewController
+
+- (NSInteger)pagingViewController:(id)arg1 numberOfPagesInSection:(id)arg2 {
+    if ([BHTManager alwaysFollowingPage] && [[self.parentViewController class] isEqual:NSClassFromString(@"THFHomeTimelineContainerViewController")]) {
+        return 1;
+    }
+    return %orig;
+}
+
+- (NSInteger)selectedIndex {
+    if ([BHTManager alwaysFollowingPage] && [[self.parentViewController class] isEqual:NSClassFromString(@"THFHomeTimelineContainerViewController")]) {
+        return 1;
+    }
+    return %orig;
+}
+
+- (NSInteger)initialSelectedIndex {
+    if ([BHTManager alwaysFollowingPage] && [[self.parentViewController class] isEqual:NSClassFromString(@"THFHomeTimelineContainerViewController")]) {
+        return 1;
+    }
+    return %orig;
+}
+
+- (id)pagingViewController:(id)arg1 viewControllerAtIndexPath:(id)arg2 {
+    if ([BHTManager alwaysFollowingPage] && [[self.parentViewController class] isEqual:NSClassFromString(@"THFHomeTimelineContainerViewController")]) {
+        return %orig(arg1, [NSIndexPath indexPathForRow:1 inSection:0]);
+    }
+    return %orig;
+}
+
+%end
+
+@interface TFNScrollingHorizontalLabelView
+- (id)delegate;
+@end
+
+%hook TFNScrollingHorizontalLabelView
+- (void)layoutSubviews {
+    if ([[self.delegate class] isEqual:NSClassFromString(@"TFNScrollingSegmentedViewController")]) {
+        TFNScrollingSegmentedViewController *segmentedController = (TFNScrollingSegmentedViewController *)self.delegate;
+        if ([BHTManager alwaysFollowingPage] && [[segmentedController.parentViewController class] isEqual:NSClassFromString(@"THFHomeTimelineContainerViewController")]) {
+            return;
+        }
+    }
+    %orig;
+}
+%end
+
 %hook TFNTwitterMediaUploadConfiguration
 - (_Bool)photoUploadHighQualityImagesSettingIsVisible {
     return [BHTManager autoHighestLoad] ? true : %orig;
@@ -1336,4 +1510,3 @@ static void batchSwizzlingOnClass(Class cls, NSArray<NSString*>*origSelectors, I
     }];
     %init;
 }
-
